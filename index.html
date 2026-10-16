@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SteamCart HTML</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
+</head>
+<body class="bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-100 min-h-screen">
+<div class="max-w-5xl mx-auto p-4 space-y-4">
+  <header class="flex items-center justify-between">
+    <h1 class="text-2xl font-bold">🎮 SteamCart</h1>
+    <button id="theme" class="px-3 py-1 rounded bg-slate-300 dark:bg-slate-700">🌓 Thème</button>
+  </header>
+
+  <section class="bg-white dark:bg-slate-800 rounded-lg p-4 space-y-3 shadow">
+    <div class="flex flex-wrap gap-2">
+      <input id="appid" placeholder="ID Steam (ex: 440) ou URL du store" class="flex-1 min-w-48 px-3 py-2 rounded bg-slate-100 dark:bg-slate-700 outline-none">
+      <button id="add" class="px-4 py-2 rounded bg-blue-600 hover:bg-blue-500 text-white">Ajouter</button>
+      <select id="cc" class="px-3 py-2 rounded bg-slate-100 dark:bg-slate-700">
+        <option value="fr">EUR (FR)</option><option value="us">USD (US)</option>
+        <option value="gb">GBP (UK)</option><option value="ca">CAD (CA)</option>
+        <option value="ch">CHF (CH)</option><option value="br">BRL (BR)</option>
+      </select>
+    </div>
+    <div class="flex flex-wrap gap-2 text-sm">
+      <label class="px-3 py-1 rounded bg-slate-300 dark:bg-slate-700 cursor-pointer">📂 Importer .txt
+        <input id="import" type="file" accept=".txt" class="hidden"></label>
+      <button id="export" class="px-3 py-1 rounded bg-slate-300 dark:bg-slate-700">💾 Exporter .txt</button>
+      <button id="refresh" class="px-3 py-1 rounded bg-slate-300 dark:bg-slate-700">🔄 Actualiser</button>
+      <button id="clear" class="px-3 py-1 rounded bg-red-600 text-white">Vider</button>
+    </div>
+    <p id="status" class="text-sm text-slate-500 dark:text-slate-400"></p>
+  </section>
+
+  <section id="list" class="space-y-2"></section>
+
+  <section class="bg-white dark:bg-slate-800 rounded-lg p-4 shadow grid grid-cols-3 gap-2 text-center">
+    <div><div class="text-xs text-slate-500 dark:text-slate-400">Prix de base</div><div id="tInit" class="text-lg font-bold">0</div></div>
+    <div><div class="text-xs text-slate-500 dark:text-slate-400">Prix actuel</div><div id="tFinal" class="text-lg font-bold text-green-500">0</div></div>
+    <div><div class="text-xs text-slate-500 dark:text-slate-400">Économie</div><div id="tSave" class="text-lg font-bold text-yellow-500">0</div></div>
+  </section>
+  <p class="text-xs text-slate-500 text-center">Requêtes CORS via proxys publics (aucun serveur requis). Les données sont stockées dans votre navigateur.</p>
+</div>
+
+<script>
+// Steam store API n'envoie pas d'en-têtes CORS : on passe par des proxys CORS publics, avec bascule automatique.
+const PROXIES = [
+  u => 'https://corsproxy.io/?' + encodeURIComponent(u),
+  u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+  u => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
+];
+async function steamFetch(url) {
+  let err;
+  for (const p of PROXIES) {
+    try {
+      const r = await fetch(p(url));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.json();
+    } catch (e) { err = e; }
+  }
+  throw err;
+}
+
+const $ = id => document.getElementById(id);
+let ids = JSON.parse(localStorage.ids || '[]');
+let unchecked = new Set(JSON.parse(localStorage.unchecked || '[]'));
+let data = {};
+$('cc').value = localStorage.cc || 'fr';
+if (localStorage.theme === 'light') document.documentElement.classList.remove('dark');
+
+const save = () => { localStorage.ids = JSON.stringify(ids); localStorage.unchecked = JSON.stringify([...unchecked]); localStorage.cc = $('cc').value; };
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = cents => (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+async function load(id) {
+  const cc = $('cc').value;
+  const j = await steamFetch(`https://store.steampowered.com/api/appdetails?appids=${id}&cc=${cc}&l=french`);
+  const e = j && j[id];
+  if (!e || !e.success) return { id, error: 'Introuvable' };
+  const d = e.data, p = d.price_overview;
+  return { id, name: d.name, type: d.type, img: d.header_image, free: d.is_free, cur: p && p.currency,
+    initial: p ? p.initial : 0, final: p ? p.final : 0, discount: p ? p.discount_percent : 0 };
+}
+
+async function refresh() {
+  $('status').textContent = 'Chargement…';
+  let fails = 0;
+  await Promise.all(ids.map(async id => {
+    try { data[id] = await load(id); } catch (e) { data[id] = { id, error: 'Erreur réseau' }; fails++; }
+  }));
+  $('status').textContent = fails ? `${fails} requête(s) en échec (proxy indisponible ?)` : '';
+  render();
+}
+
+function render() {
+  let ti = 0, tf = 0, cur = '';
+  $('list').innerHTML = ids.map(id => {
+    const g = data[id] || { id, error: 'Chargement…' };
+    const on = !unchecked.has(id);
+    if (!g.error && on) { ti += g.initial; tf += g.final; cur = g.cur || cur; }
+    const price = g.error ? `<span class="text-red-400">${esc(g.error)}</span>` :
+      g.free ? '<span class="text-green-400">Gratuit</span>' :
+      `${g.discount ? `<span class="bg-green-600 text-white px-2 rounded">-${g.discount}%</span> <s class="text-slate-400">${fmt(g.initial)}</s>` : ''}
+       <b>${fmt(g.final)} ${esc(g.cur || '')}</b>`;
+    return `<div class="flex items-center gap-3 bg-white dark:bg-slate-800 rounded-lg p-2 shadow ${on ? '' : 'opacity-50'}">
+      <input type="checkbox" data-t="${id}" ${on ? 'checked' : ''}>
+      ${g.img ? `<img src="${esc(g.img)}" class="w-32 rounded" loading="lazy">` : '<div class="w-32 h-12"></div>'}
+      <div class="flex-1 min-w-0"><a target="_blank" rel="noopener" href="https://store.steampowered.com/app/${id}" class="font-semibold hover:underline truncate block">${esc(g.name || id)}</a>
+        <span class="text-xs text-slate-500">${esc(g.type || '')} · ${id}</span></div>
+      <div class="text-right text-sm">${price}</div>
+      <button data-d="${id}" class="text-red-500 px-2">✕</button></div>`;
+  }).join('');
+  $('tInit').textContent = fmt(ti) + ' ' + cur;
+  $('tFinal').textContent = fmt(tf) + ' ' + cur;
+  $('tSave').textContent = fmt(ti - tf) + ' ' + cur;
+}
+
+function addIds(text) {
+  const found = (String(text).match(/\d+/g) || []).map(String);
+  const m = String(text).match(/\/app\/(\d+)/);
+  const list = m ? [m[1]] : found;
+  let added = false;
+  list.forEach(i => { if (!ids.includes(i)) { ids.push(i); added = true; } });
+  if (added) { save(); refresh(); }
+}
+
+$('add').onclick = () => { addIds($('appid').value); $('appid').value = ''; };
+$('appid').onkeydown = e => { if (e.key === 'Enter') $('add').click(); };
+$('refresh').onclick = refresh;
+$('cc').onchange = () => { save(); refresh(); };
+$('clear').onclick = () => { if (confirm('Vider la liste ?')) { ids = []; unchecked.clear(); data = {}; save(); render(); } };
+$('import').onchange = async e => { const f = e.target.files[0]; if (f) addIds(await f.text()); e.target.value = ''; };
+$('export').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([ids.join('\n')], { type: 'text/plain' }));
+  a.download = 'list.txt'; a.click(); URL.revokeObjectURL(a.href);
+};
+$('theme').onclick = () => { localStorage.theme = document.documentElement.classList.toggle('dark') ? 'dark' : 'light'; };
+$('list').onclick = e => {
+  const d = e.target.dataset;
+  if (d.d) { ids = ids.filter(i => i !== d.d); unchecked.delete(d.d); save(); render(); }
+};
+$('list').onchange = e => {
+  const t = e.target.dataset.t;
+  if (t) { e.target.checked ? unchecked.delete(t) : unchecked.add(t); save(); render(); }
+};
+render(); refresh();
+</script>
+</body>
+</html>
